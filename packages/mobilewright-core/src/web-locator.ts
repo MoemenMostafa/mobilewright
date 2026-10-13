@@ -426,6 +426,8 @@ export class MobileWebViewLocator {
 
   // ─── Private helpers ─────────────────────────────────────────
 
+  // The page's device input, or a clear error naming `what` when there is none
+  // (a page built directly on a WebViewSession has no device to tap or type on).
   private requireNativeInput(what: string): WebViewNativeInput {
     if (!this._nativeInput) {
       throw new Error(`${what}: a real touch needs the page from screen.getByWebView().page(); use click() for a synthetic click`);
@@ -448,6 +450,8 @@ export class MobileWebViewLocator {
     await native.tap(Math.round(box.x + point.x * scale), Math.round(box.y + point.y * scale));
   }
 
+  // Whether the element has keyboard focus, polling for up to FOCUS_TIMEOUT:
+  // a tapped field can take a moment to focus on a slow device.
   private async hasFocus(): Promise<boolean> {
     const deadline = Date.now() + FOCUS_TIMEOUT;
     while (true) {
