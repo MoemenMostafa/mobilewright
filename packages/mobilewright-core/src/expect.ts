@@ -12,6 +12,41 @@ export interface ExpectOptions {
   timeout?: number;
 }
 
+/** Options for the text matchers (toHaveText / toContainText). */
+export interface ExpectTextOptions extends ExpectOptions {
+  /** Compare case-insensitively (Playwright's `ignoreCase`). */
+  ignoreCase?: boolean;
+}
+
+// Playwright's whitespace normalization for text matchers: trim, drop
+// zero-width spaces, collapse any whitespace run into a single space.
+function normalizeWhiteSpace(text: string): string {
+  return text.trim().replace(/\u200b/g, '').replace(/\s+/g, ' ');
+}
+
+// Build the "does the received text match?" predicate for toHaveText /
+// toContainText with Playwright's semantics: whitespace-normalized on both
+// sides, RegExp or string, optional ignoreCase, substring for toContainText.
+function textMatcher(
+  expected: string | RegExp,
+  opts: { ignoreCase?: boolean; substring: boolean },
+): (received: string) => boolean {
+  if (expected instanceof RegExp) {
+    const flags = opts.ignoreCase && !expected.flags.includes('i') ? `${expected.flags}i` : expected.flags;
+    const pattern = new RegExp(expected.source, flags);
+    return (received) => {
+      pattern.lastIndex = 0;
+      return pattern.test(normalizeWhiteSpace(received));
+    };
+  }
+  const fold = (text: string): string => (opts.ignoreCase ? text.toLowerCase() : text);
+  const wanted = fold(normalizeWhiteSpace(expected));
+  return (received) => {
+    const got = fold(normalizeWhiteSpace(received));
+    return opts.substring ? got.includes(wanted) : got === wanted;
+  };
+}
+
 // Playwright accepts either a bare string or `{ message }` as expect()'s second
 // argument. Its object form also carries `timeout`, which we do not support yet.
 export type ExpectMessage = string | { message?: string };
@@ -281,19 +316,19 @@ class LocatorAssertions {
     });
   }
 
-  async toHaveText(expected: string | RegExp, opts?: ExpectOptions): Promise<void> {
+  async toHaveText(expected: string | RegExp, opts?: ExpectTextOptions): Promise<void> {
     return this._wrapAssertion('toHaveText', async () => {
       await this.assertText(
-        (text) => expected instanceof RegExp ? expected.test(text) : text === expected,
+        textMatcher(expected, { ignoreCase: opts?.ignoreCase, substring: false }),
         expected, opts,
       );
     });
   }
 
-  async toContainText(expected: string, opts?: ExpectOptions): Promise<void> {
+  async toContainText(expected: string | RegExp, opts?: ExpectTextOptions): Promise<void> {
     return this._wrapAssertion('toContainText', async () => {
       await this.assertText(
-        (text) => text.includes(expected),
+        textMatcher(expected, { ignoreCase: opts?.ignoreCase, substring: true }),
         expected, opts,
       );
     });
@@ -629,26 +664,61 @@ class PageAssertions {
 
   async toHaveURL(url: string | RegExp, opts?: ExpectOptions): Promise<void> {
     return this._wrapAssertion('toHaveURL', async () => {
-      let last = '';
-      await retryAssertion(
-        async () => { try { last = await this.page.url(); } catch { last = ''; } return last; },
-        (current) => this.matches(url instanceof RegExp ? url.test(current) : current === url),
-        opts?.timeout ?? DEFAULT_TIMEOUT,
-        () => `Expected page URL to ${this.negated ? 'not ' : ''}match "${url}", but got "${last}"`,
+      await this.assertPageValue(
+        'URL',
+        () => this.page._liveUrl(),
+        (current) => url instanceof RegExp ? url.test(current) : current === url,
+        url, opts,
       );
     });
   }
 
   async toHaveTitle(title: string | RegExp, opts?: ExpectOptions): Promise<void> {
     return this._wrapAssertion('toHaveTitle', async () => {
-      let last = '';
-      await retryAssertion(
-        async () => { try { last = await this.page.title(); } catch { last = ''; } return last; },
-        (current) => this.matches(title instanceof RegExp ? title.test(current) : current === title),
-        opts?.timeout ?? DEFAULT_TIMEOUT,
-        () => `Expected page title to ${this.negated ? 'not ' : ''}match "${title}", but got "${last}"`,
+      await this.assertPageValue(
+        'title',
+        () => this.page.title(),
+        (current) => title instanceof RegExp ? title.test(current) : current === title,
+        title, opts,
       );
     });
+  }
+
+  // Poll a page-level value until it matches (honoring negation). A read that
+  // fails is not a value: it keeps the poll unsuccessful, so a negated assertion
+  // cannot pass merely because the page could not be observed.
+  private async assertPageValue(
+    what: string,
+    read: () => Promise<string>,
+    matches: (value: string) => boolean,
+    expected: string | RegExp,
+    opts?: ExpectOptions,
+  ): Promise<void> {
+    let last: string | null = null;
+    let lastError: unknown;
+    await retryAssertion(
+      async (): Promise<string | null> => {
+        try {
+          last = await read();
+          lastError = undefined;
+          return last;
+        } catch (e) {
+          last = null;
+          lastError = e;
+          return null;
+        }
+      },
+      (current) => current !== null && this.matches(matches(current)),
+      opts?.timeout ?? DEFAULT_TIMEOUT,
+      () => {
+        const expectation = `Expected page ${what} to ${this.negated ? 'not ' : ''}match "${expected}"`;
+        if (last === null) {
+          const reason = lastError instanceof Error ? lastError.message : String(lastError);
+          return `${expectation}, but the page ${what} could not be read: ${reason}`;
+        }
+        return `${expectation}, but got "${last}"`;
+      },
+    );
   }
 }
 

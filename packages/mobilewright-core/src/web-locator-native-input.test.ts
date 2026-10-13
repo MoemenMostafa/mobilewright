@@ -137,7 +137,7 @@ test.describe('MobileWebViewLocator.fill() with device input', () => {
     const { page, events, evaluateCalls } = fakeField();
     await page.locator('input').fill('a@b.c');
     playwrightExpect(events).toEqual(['tap 20,140', 'type a@b.c']);
-    const clear = evaluateCalls.find((c) => c.includes('if (el.value) { el.value = \'\''));
+    const clear = evaluateCalls.find((c) => c.includes('if (el.value) { { const next = \'\';'));
     playwrightExpect(clear).toBeDefined();
     playwrightExpect(evaluateCalls.some((c) => c.includes('a@b.c'))).toBe(false);
   });
@@ -177,7 +177,7 @@ test.describe('MobileWebViewLocator.fill() with device input', () => {
   test('without device input fill() still sets the value in-page', async () => {
     const { session, evaluateCalls } = fakeWebViewSession({ evaluateAlways: true });
     await new WebLocator(session, 'input').fill('x1');
-    playwrightExpect(evaluateCalls.some((c) => c.includes('el.value = "x1"'))).toBe(true);
+    playwrightExpect(evaluateCalls.some((c) => c.includes('const next = "x1";'))).toBe(true);
   });
 });
 
